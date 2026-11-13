@@ -1,5 +1,5 @@
 /* Release changes to this list or its files require a new VERSION. */
-const VERSION = 'selectives-shell-v2';
+const VERSION = 'selectives-shell-v3';
 const prefix = VERSION.replace(/v\d+$/, '') + self.registration.scope + ':';
 const cacheName = prefix + VERSION;
 const scope = self.registration.scope;
