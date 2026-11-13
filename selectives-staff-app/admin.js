@@ -14,13 +14,16 @@
     if (can('shift.view_all') && (force || !REF.locations)) { parts.push(['api_listLocations']); keys.push('locations'); }
     if (can('client.view_all') && (force || !REF.clients)) { parts.push(['api_listClients']); keys.push('clients'); }
     if (parts.length) {
+      var token = A.S.token;
       var res = await A.batch(parts);
+      if (A.S.token !== token) throw new Error('Your session changed.');
       res.forEach(function (r, i) { REF[keys[i]] = r instanceof Error ? [] : r; });
     }
     REF.employees = REF.employees || []; REF.locations = REF.locations || []; REF.clients = REF.clients || [];
     return REF;
   }
   function invalidate(k) { if (k) REF[k] = null; else REF.employees = REF.locations = REF.clients = null; }
+  A.resetManagement = invalidate;
   function isActive(e) { return String(e.Employment_Status).trim().toUpperCase() === 'ACTIVE'; }
   function empName(id) { var e = (REF.employees || []).filter(function (x) { return x.Employee_ID === id; })[0]; return e ? e.First_Name + ' ' + e.Last_Name : id; }
   function caregiverOptions(selected, blank) {

@@ -10,8 +10,22 @@
   var CFG = window.APP_CONFIG || {};
   var TZ = CFG.TIME_ZONE || 'America/New_York';
   var DEMO = CFG.API_URL === 'DEMO';
-  var SESSION_KEY = 'selectives_session_v1';
-  var REQ_KEY = 'selectives_my_requests_v1';
+  var pendingRequests = {};
+  var scripts = {};
+  function loadScript(name) {
+    if (!scripts[name]) scripts[name] = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      script.src = name;
+      script.onload = resolve;
+      script.onerror = function () {
+        script.remove();
+        delete scripts[name];
+        reject(new Error('Could not load this screen. Check your connection and try again.'));
+      };
+      document.head.appendChild(script);
+    });
+    return scripts[name];
+  }
 
   /* ================================================================ utils */
   function Raw(s) { this.s = s; }
@@ -124,39 +138,48 @@
 
   /* ================================================================ session */
   var S = { token: null, kind: null, me: null, unread: 0, shiftCache: {}, installEvt: null };
-  function loadSession() {
-    try { var s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); if (s && s.token) { S.token = s.token; S.kind = s.kind; S.me = s.me; } } catch (e) {}
+  function clearSession() {
+    S.token = null; S.kind = null; S.me = null; S.unread = 0; S.shiftCache = {};
+    pendingRequests = {};
+    if (window.App.resetManagement) window.App.resetManagement();
   }
-  function saveSession() { try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token: S.token, kind: S.kind, me: S.me })); } catch (e) {} }
-  function clearSession() { S.token = null; S.kind = null; S.me = null; S.unread = 0; S.shiftCache = {}; try { localStorage.removeItem(SESSION_KEY); } catch (e) {} }
   function can(p) { return !!(S.me && S.me.permissions && S.me.permissions.indexOf(p) !== -1); }
   function isManager() { return can('shift.view_all'); }
-  function myRequests() { try { return JSON.parse(localStorage.getItem(REQ_KEY) || '{}'); } catch (e) { return {}; } }
-  function setMyRequest(shiftId, requestId) { var m = myRequests(); if (requestId) m[shiftId] = requestId; else delete m[shiftId]; try { localStorage.setItem(REQ_KEY, JSON.stringify(m)); } catch (e) {} }
+  function myRequests() { return pendingRequests; }
+  function setMyRequest(shiftId, requestId) {
+    if (requestId) pendingRequests[shiftId] = requestId;
+    else delete pendingRequests[shiftId];
+  }
 
   /* ================================================================ API */
   async function call(method, args) {
     for (var attempt = 0; ; attempt++) {
       var data;
       if (DEMO) {
+        await loadScript('demo.js');
         data = await window.DemoAPI.handle(method, args);
       } else {
-        if (!CFG.API_URL || CFG.API_URL.indexOf('https://') !== 0) throw new Error('The app is not connected yet. Set API_URL in config.js.');
-        var res;
+        var controller = new AbortController();
+        var timeout = setTimeout(function () { controller.abort(); }, 45000);
         try {
-          // text/plain keeps this a "simple" request, so the browser skips the CORS preflight Apps Script can't answer.
-          res = await fetch(CFG.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ method: method, args: args }), redirect: 'follow' });
+          var res = await fetch(CFG.API_URL, {
+            method: 'POST', credentials: 'omit', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: method, args: args }), signal: controller.signal
+          });
+          data = await res.json();
         } catch (e) {
-          throw new Error(navigator.onLine === false ? 'You are offline. Connect to the internet and try again.' : 'Could not reach the staff service. Check your connection and try again.');
-        }
-        if (!res.ok) throw new Error('The staff service returned an error (' + res.status + '). Please try again.');
-        try { data = await res.json(); } catch (e) { throw new Error('The staff service sent an unexpected reply. Check that API_URL is the web app /exec URL.'); }
+          var mutation = !/^api_(get|list|count)/.test(method);
+          throw new Error(navigator.onLine === false ? 'You are offline. Connect to the internet and refresh.' :
+            mutation ? 'The staff service could not confirm your request. Refresh your schedule or history before trying again.' :
+            'Could not load your data. Check your connection and try again.');
+        } finally { clearTimeout(timeout); }
       }
       if (data && data.ok) return data.result;
       if (data && data.code === 'BUSY' && attempt < 3) { await sleep(500 + Math.random() * 800 * (attempt + 1)); continue; }
       var err = new Error((data && data.error) || 'Request failed.');
       err.code = data && data.code;
-      if (err.code === 'AUTH_REQUIRED' && S.token && !/^api_(verify|request)/.test(method)) {
+      if (err.code === 'AUTH_REQUIRED' && S.token && args[0] === S.token) {
         clearSession(); toast(err.message, true); location.hash = '#/'; render();
       }
       throw err;
@@ -262,12 +285,12 @@
   }
 
   /* ================================================================ routing */
-  var routes = {};
+  var routes = Object.create(null);
   var renderSeq = 0;
   function route(name, def) { routes[name] = def; }
   function parseHash() {
     var hsh = location.hash.replace(/^#\/?/, '');
-    var q = {}, qi = hsh.indexOf('?');
+    var q = Object.create(null), qi = hsh.indexOf('?');
     if (qi !== -1) { hsh.slice(qi + 1).split('&').forEach(function (kv) { var p = kv.split('='); if (p[0]) q[decodeURIComponent(p[0])] = decodeURIComponent(p[1] || ''); }); hsh = hsh.slice(0, qi); }
     var parts = hsh.split('/').filter(Boolean);
     return { name: parts[0] || 'home', id: parts[1] ? decodeURIComponent(parts[1]) : '', query: q };
@@ -292,9 +315,19 @@
     if ($('#modal').open) { $('#modal').close(); $('#modal').innerHTML = ''; }
     if (!S.token) { renderLogin(app); return; }
     if (S.kind === 'family') { renderFamily(app); return; }
-    var r = parseHash();
+    if (isManager()) {
+      try { await loadScript('admin.js'); }
+      catch (e) {
+        if (seq === renderSeq) errorBox(app, e, render);
+        return;
+      }
+      if (seq !== renderSeq) return;
+    }
+    var r;
+    try { r = parseHash(); } catch (e) { go('home'); return; }
     var def = routes[r.name] || routes.home;
     if (def.perm && !can(def.perm)) def = routes.home;
+    if (def === routes.home && isManager()) def = routes.dashboard;
     var tabs = tabsFor();
     var activeTab = def.tab || r.name;
     app.innerHTML = h`
@@ -303,7 +336,7 @@
         <button class="icon-btn" id="bell" aria-label="Notifications">${icon('bell')}<span class="dot" ${S.unread ? '' : 'hidden'}>${S.unread}</span></button>
       </header>
       <main id="main" class="${def.wide ? 'wide' : ''}"></main>
-      <nav class="tabbar">${tabs.map(function (t) { return h`<a href="#/${t.k}" class="${t.k === activeTab ? 'on' : ''}">${icon(t.i)}<span>${t.l}</span></a>`; })}</nav>`.s;
+      <nav class="tabbar" aria-label="Primary navigation">${tabs.map(function (t) { return h`<a href="#/${t.k}" class="${t.k === activeTab ? 'on' : ''}" aria-current="${t.k === activeTab ? 'page' : 'false'}">${icon(t.i)}<span>${t.l}</span></a>`; })}</nav>`.s;
     $('#bell').onclick = function () { go('alerts'); };
     var main = $('#main');
     loading(main);
@@ -330,7 +363,7 @@
       app.innerHTML = h`<div class="login"><div style="width:100%;max-width:420px">
         <div class="brand"><img src="icons/icon-192.png" alt=""><small>${st.kind === 'family' ? 'Family app' : 'Staff app'}</small><h1>${CFG.ORG_NAME || 'Selectives Home Care'}</h1></div>
         <div class="card">
-          <div class="seg" role="tablist"><button type="button" data-k="staff" class="${st.kind === 'staff' ? 'on' : ''}">Staff</button><button type="button" data-k="family" class="${st.kind === 'family' ? 'on' : ''}">Family</button></div>
+          <div class="seg" role="group" aria-label="Account type"><button type="button" aria-pressed="${st.kind === 'staff'}" data-k="staff" class="${st.kind === 'staff' ? 'on' : ''}">Staff</button><button type="button" aria-pressed="${st.kind === 'family'}" data-k="family" class="${st.kind === 'family' ? 'on' : ''}">Family</button></div>
           ${DEMO ? h`<div class="demo-note"><b>Demo mode</b> – sample data, nothing is saved. Sign in as <b>admin@demo.com</b>, <b>scheduler@demo.com</b>, <b>caregiver@demo.com</b> or (Family) <b>family@demo.com</b>. Code: <b>123456</b></div>` : ''}
           ${st.step === 'email' ? h`
             <form id="f-email">
@@ -382,7 +415,7 @@
               var r = await call('api_verifyLoginCode', [st.email, code, deviceInfo()]);
               S.token = r.token; S.kind = 'staff'; S.me = r.employee;
             }
-            saveSession(); location.hash = '#/home'; render();
+            location.hash = '#/home'; render();
           });
         };
         $('#resend', app).onclick = function (e) {
@@ -398,8 +431,8 @@
   }
   async function signOut() {
     var t = S.token; clearSession();
-    try { if (t) await call('api_signOut', [t]); } catch (e) {}
     location.hash = '#/'; render();
+    try { if (t) await call('api_signOut', [t]); } catch (e) {}
   }
 
   /* ================================================================ clock in / out */
@@ -516,7 +549,6 @@
   }
 
   route('home', { title: 'Home', view: async function (el, r, live) {
-    if (isManager()) return routes.dashboard.view(el, r, live);
     setTitle('Home');
     var t = todayStr();
     var res = await batch([['api_listMySchedule', { dateFrom: addDays(t, -1), dateTo: addDays(t, 14), dashboard: true }], ['api_getMyHours', { summaryOnly: true }], ['api_listOpenShifts']]);
@@ -542,9 +574,9 @@
         ${startsToday ? h`<button class="btn accent block xl" id="clock-in" style="margin-top:12px">${icon('clock')} Clock in</button>` : ''}
         <button class="btn ghost block" data-go="shift/${nextUp.Shift_ID}" style="color:#fff">View shift</button></div>`;
     } else {
-      hero = h`<div class="card hero"><small class="muted">HELLO ${String(S.me.firstName || '').toUpperCase()}</small><h2 style="margin:6px 0">No shift to clock in to right now.</h2><p class="muted">${open.length ? 'There are open shifts you can request.' : 'Check your schedule or set your availability so the office can offer you shifts.'}</p></div>`;
+      hero = h`<div class="card hero"><h2 style="margin:6px 0">No shift to clock in to right now.</h2><p class="muted">${open.length ? 'There are open shifts you can request.' : 'Check your schedule or set your availability so the office can offer you shifts.'}</p></div>`;
     }
-    el.innerHTML = h`${installHint()}${hero}
+    el.innerHTML = h`<div class="page-head"><div><p class="dashboard-date">${fmtDate(t, { weekday: 'long', month: 'long', day: 'numeric' })}</p><h1>${S.me.firstName ? 'Welcome, ' + S.me.firstName : 'Your workday'}</h1></div></div>${installHint()}${hero}
       ${hoursSum ? h`<div class="grid"><a class="stat" href="#/hours"><b>${hoursSum.weeklyHours}</b><span>hours this week</span></a><a class="stat" href="#/hours"><b>${hoursSum.payPeriodHours}</b><span>hours this pay period</span></a><a class="stat ${open.length ? 'alert' : ''}" href="#/open"><b>${open.length}</b><span>open shifts for you</span></a></div>` : ''}
       <div class="section-title">Coming up</div>
       ${upcoming.length ? h`<div class="list">${upcoming.map(function (s) { return shiftItem(s); })}</div>` : h`<div class="card empty">No other shifts in the next two weeks.</div>`}
@@ -557,6 +589,7 @@
   route('schedule', { title: 'My schedule', view: async function (el, r, live) {
     setTitle('My schedule');
     var t = todayStr(), range = r.query.range || 'upcoming';
+    if (range !== 'past') range = 'upcoming';
     var ranges = { upcoming: [t, addDays(t, 28)], past: [addDays(t, -28), addDays(t, -1)] };
     var list = await api('api_listMySchedule', { dateFrom: ranges[range][0], dateTo: ranges[range][1] });
     if (!live()) return;
@@ -808,12 +841,11 @@
     fmtDate: fmtDate, fmtTime: fmtTime, fmtDT: fmtDT, relDay: relDay, todayStr: todayStr, addDays: addDays, hrs: hrs, payLabel: payLabel, mapsLink: mapsLink,
     isoToWall: isoToWall, wallToOffset: wallToOffset, wallToIso: wallToIso, uuid: uuid, isTrue: isTrue, can: can, S: S, loading: loading
   };
-  document.addEventListener('DOMContentLoaded', async function () {
-    loadSession();
-    if (S.token && S.kind === 'staff') {
-      // Confirms a stored session is still valid and picks up any role change.
-      try { var me = await api('api_getCurrentSession'); S.me = Object.assign({}, S.me, me); saveSession(); } catch (e) { if (e.code !== 'AUTH_REQUIRED') { /* offline: keep going */ } }
-    }
+  document.addEventListener('DOMContentLoaded', function () {
+    ['selectives_session_v1', 'selectives_my_requests_v1'].forEach(function (key) {
+      try { localStorage.removeItem(key); } catch (e) {}
+    });
     render();
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
   });
 })();

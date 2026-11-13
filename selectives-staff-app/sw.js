@@ -1,32 +1,30 @@
-/* Caches the app shell only. API calls (POST to Google) always go to the network,
- * so staff never see stale schedules or hours. Bump VERSION on every release. */
-const VERSION = 'selectives-v1';
-const SHELL = [
-  './', './index.html', './app.css', './app.js', './admin.js', './demo.js', './config.js', './manifest.json',
-  './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
-];
+/* Release changes to this list or its files require a new VERSION. */
+const VERSION = 'selectives-shell-v2';
+const prefix = VERSION.replace(/v\d+$/, '') + self.registration.scope + ':';
+const cacheName = prefix + VERSION;
+const scope = self.registration.scope;
+const shell = [
+  './', 'index.html', 'app.css', 'app.js', 'admin.js', 'config.js', 'manifest.json',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/maskable-512.png'
+].map(path => new URL(path, scope).href);
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(shell)));
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(
+    keys.filter(key => key.startsWith(prefix) && key !== cacheName).map(key => caches.delete(key))
+  )).then(() => self.clients.claim()));
 });
 
-self.addEventListener('fetch', (e) => {
-  const req = e.request;
-  if (req.method !== 'GET') return;                       // API is POST: never touched
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;        // Google, fonts etc.: straight to network
-  // Network first so a new release shows up right away; cache is the offline fallback.
-  e.respondWith(
-    fetch(req).then((res) => {
-      if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
-      return res;
-    }).catch(() => caches.match(req).then((r) => r || caches.match('./index.html')))
-  );
+self.addEventListener('fetch', event => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (request.method !== 'GET') return;
+  if (request.mode === 'navigate' && [scope, new URL('index.html', scope).href].includes(url.origin + url.pathname)) {
+    event.respondWith(caches.open(cacheName).then(cache => cache.match(scope)).then(response => response || fetch(request)));
+  } else if (shell.includes(request.url)) {
+    event.respondWith(caches.open(cacheName).then(cache => cache.match(request)).then(response => response || fetch(request)));
+  }
 });

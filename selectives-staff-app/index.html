@@ -6,7 +6,7 @@
   <title>Selectives Staff</title>
   <meta name="description" content="Selectives Home Care staff and family app">
   <meta name="robots" content="noindex, nofollow">
-  <meta name="theme-color" content="#1f6e2d">
+  <meta name="theme-color" content="#142238">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -23,13 +23,6 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <dialog id="modal"></dialog>
   <script src="config.js"></script>
-  <script src="demo.js"></script>
-  <script src="app.js"></script>
-  <script src="admin.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-    }
-  </script>
+  <script src="app.js" defer></script>
 </body>
 </html>

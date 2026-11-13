@@ -1,10 +1,4 @@
-/*
- * The only file you edit per deployment.
- *
- * API_URL: your Apps Script web app URL (Deploy > Manage deployments > Web app URL,
- *          ending in /exec). Set it to 'DEMO' to run the app on built-in sample data
- *          with no backend (handy for showing the app to a prospect).
- */
+// Local demo configuration. The Cloudflare build emits its own same-origin API URL.
 window.APP_CONFIG = {
   API_URL: 'DEMO',
   ORG_NAME: 'Selectives Home Care',
